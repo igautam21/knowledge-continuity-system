@@ -1,6 +1,6 @@
 import ReactMarkdown from "react-markdown";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import Auth from "./components/Auth";
 
@@ -23,7 +23,6 @@ const navigation = [
 function App() {
 
   // Authentication state
-
   const [currentUser, setCurrentUser] = useState(() => {
 
     const savedUser = sessionStorage.getItem("user");
@@ -51,7 +50,6 @@ function App() {
   });
 
   // Dashboard state
-
   const [activeNav, setActiveNav] = useState("Overview");
 
   const [search, setSearch] = useState("");
@@ -67,15 +65,13 @@ function App() {
   const [selectedEntry, setSelectedEntry] = useState(null);
 
   // Loading and error states
-
-  const [loadingKnowledge, setLoadingKnowledge] = useState(false);
+  const [loadingKnowledge, setLoadingKnowledge] = useState(() => Boolean(currentUser));
 
   const [submittingKnowledge, setSubmittingKnowledge] = useState(false);
 
   const [knowledgeError, setKnowledgeError] = useState("");
 
   // New knowledge form state
-
   const [showForm, setShowForm] = useState(false);
 
   const [newTitle, setNewTitle] = useState("");
@@ -84,23 +80,22 @@ function App() {
 
   // AI Assistant state
   const [chatInput, setChatInput] = useState("");
+
   const [chatMessages, setChatMessages] = useState([]);
+
   const [askingAssistant, setAskingAssistant] = useState(false);
+
   const [assistantError, setAssistantError] = useState("");
 
   // Handle successful login or registration
-
   function handleAuthSuccess(user) {
-
     sessionStorage.setItem("user", JSON.stringify(user));
-
+    setLoadingKnowledge(true);
     setCurrentUser(user);
-
   }
 
   // Handle logout
-
-  function handleLogout() {
+  const handleLogout = useCallback(() => {
 
     sessionStorage.removeItem("token");
 
@@ -121,12 +116,10 @@ function App() {
     setActiveNav("Overview");
 
     setSearch("");
-
-  }
+  }, []);
 
   // Convert backend records into dashboard entries
-
-  function formatKnowledgeEntries(items) {
+  const formatKnowledgeEntries = useCallback((items) => {
 
     return items.map((item, index) => ({
 
@@ -155,96 +148,90 @@ function App() {
       color: ["purple", "blue", "orange"][index % 3],
 
       summary: item.summary || "",
+
       similarityScore: item.similarityScore,
 
     }));
-
-  }
+  }, [currentUser]);
 
   // Fetch knowledge entries from MongoDB
-
-  async function loadKnowledge(showLoader = false) {
-
+  const loadKnowledge = useCallback(async () => {
     try {
-
-      if (showLoader) {
-
-        setLoadingKnowledge(true);
-
-      }
-
-      setKnowledgeError("");
-
       const data = await getKnowledge();
+      const entries = formatKnowledgeEntries(data.knowledge || []);
+      setKnowledge(entries);
+      setKnowledgeError("");
+    } catch (error) {
+      setKnowledgeError(error.message);
+
+      // If the session is invalid, return to login
+      if (
+        error.message.toLowerCase().includes("token") ||
+        error.message.toLowerCase().includes("unauthorized")
+      ) {
+        handleLogout();
+      }
+    } finally {
+      setLoadingKnowledge(false);
+    }
+  }, [formatKnowledgeEntries, handleLogout]);
+
+ // Load knowledge when the user logs in
+useEffect(() => {
+  if (!currentUser) return;
+
+  let cancelled = false;
+
+  getKnowledge()
+    .then((data) => {
+      if (cancelled) return;
 
       const entries = formatKnowledgeEntries(data.knowledge || []);
 
       setKnowledge(entries);
-
-    } catch (error) {
+      setKnowledgeError("");
+    })
+    .catch((error) => {
+      if (cancelled) return;
 
       setKnowledgeError(error.message);
 
-      // If the session is invalid, return to login
-
       if (
-
         error.message.toLowerCase().includes("token") ||
-
         error.message.toLowerCase().includes("unauthorized")
-
       ) {
-
         handleLogout();
-
       }
+    })
+    .finally(() => {
+      if (!cancelled) {
+        setLoadingKnowledge(false);
+      }
+    });
 
-    } finally {
-
-      setLoadingKnowledge(false);
-
-    }
-
-  }
-
-  // Load knowledge when the user logs in
-
-  useEffect(() => {
-
-    if (!currentUser) return;
-
-    loadKnowledge(true);
-
-  }, [currentUser]);
+  return () => {
+    cancelled = true;
+  };
+}, [currentUser, formatKnowledgeEntries, handleLogout]);
 
   // Refresh entries while AI summaries are being generated
-
   useEffect(() => {
-
     if (!currentUser) return;
 
     const hasPendingJobs = knowledge.some(
-
-      (item) =>
-
-        item.status === "Pending" || item.status === "Processing"
-
+      (item) => item.status === "Pending" || item.status === "Processing"
     );
 
     if (!hasPendingJobs) return;
 
     const intervalId = setInterval(() => {
-
-      loadKnowledge(false);
-
+      loadKnowledge();
     }, 5000);
 
     return () => clearInterval(intervalId);
-
-  }, [currentUser, knowledge]);
+  }, [currentUser, knowledge, loadKnowledge]);
 
   // Search knowledge
-
   const filteredKnowledge = useMemo(() => {
 
     const query = search.toLowerCase();
@@ -264,7 +251,6 @@ function App() {
   }, [knowledge, search]);
 
   // Search knowledge by meaning using the semantic search API
-
   async function handleSemanticSearch(event) {
 
     event.preventDefault();
@@ -313,57 +299,92 @@ function App() {
 
   // Ask the RAG assistant using the authenticated backend endpoint
   async function handleAskAssistant(event) {
+
     event.preventDefault();
+
     const question = chatInput.trim();
+
     if (!question || askingAssistant) return;
 
     setAssistantError("");
+
     setChatInput("");
+
     setChatMessages((previous) => [
+
       ...previous,
+
       { id: `${Date.now()}-user`, role: "user", content: question },
+
     ]);
+
     setAskingAssistant(true);
 
     try {
+
       // Send the previous conversation turns so the backend can
       // understand follow-up questions such as "which database does it use?"
       const conversationHistory = chatMessages
+
         .slice(-10)
+
         .map(({ role, content }) => ({ role, content }));
 
       const data = await apiRequest("/summaries/ask", {
+
         method: "POST",
+
         body: JSON.stringify({
+
           question,
+
           conversationHistory,
+
         }),
+
       });
 
       setChatMessages((previous) => [
+
         ...previous,
+
         {
+
           id: `${Date.now()}-assistant`,
+
           role: "assistant",
+
           content: data.answer || "I couldn't generate an answer for that question.",
+
           sources: Array.isArray(data.sources) ? data.sources : [],
+
         },
+
       ]);
+
     } catch (error) {
+
       setAssistantError(error.message || "The AI Assistant request failed.");
+
     } finally {
+
       setAskingAssistant(false);
+
     }
+
   }
 
   function openAssistantSource(source) {
+
     const sourceId = source.id || source._id || source.knowledgeId;
+
     const matchingEntry = knowledge.find((entry) => entry.id === sourceId);
+
     if (matchingEntry) setSelectedEntry(matchingEntry);
+
   }
 
   // Submit knowledge to the backend
-
   async function handleLocalSubmit(event) {
 
     event.preventDefault();
@@ -385,8 +406,7 @@ function App() {
       });
 
       // Refresh the list after successful submission
-
-      await loadKnowledge(false);
+      await loadKnowledge();
 
       setNewTitle("");
 
@@ -407,7 +427,6 @@ function App() {
   }
 
   // Show authentication page when logged out
-
   if (!currentUser) {
 
     return <Auth onAuthSuccess={handleAuthSuccess} />;
@@ -415,7 +434,6 @@ function App() {
   }
 
   // User initials
-
   const initials = currentUser.name
 
     .split(" ")
@@ -431,7 +449,6 @@ function App() {
     .toUpperCase();
 
   // Dashboard statistics
-
   const completedCount = knowledge.filter(
 
     (item) => item.status === "Completed"
@@ -599,74 +616,143 @@ function App() {
         <div className="page-content">
 
           {activeNav === "AI Assistant" ? (
+
             <section className="assistant-page">
+
               <div className="assistant-heading">
+
                 <div>
+
                   <div className="eyebrow"><span className="eyebrow-dot"></span> KNOWLEDGEHUB AI</div>
+
                   <h1>AI Assistant <span>✦</span></h1>
+
                   <p>Ask questions about your team's knowledge and get answers grounded in your workspace.</p>
+
                 </div>
+
                 <button type="button" className="filter-button"
+
                   onClick={() => { setChatMessages([]); setAssistantError(""); setChatInput(""); }}
+
                   disabled={askingAssistant || chatMessages.length === 0}>
+
                   New conversation
+
                 </button>
+
               </div>
+
               <div className="assistant-chat-panel">
+
                 <div className="assistant-chat-messages">
+
                   {chatMessages.length === 0 && (
+
                     <div className="assistant-empty">
+
                       <div className="assistant-empty-icon">✧</div>
+
                       <h2>What would you like to know?</h2>
+
                       <p>Ask about projects, deployment workflows, tools, solutions, or team handovers.</p>
+
                       <button type="button" className="assistant-suggestion"
+
                         onClick={() => setChatInput("How does our team deploy applications and manage backend infrastructure?")}>
+
                         How does our team deploy applications and manage backend infrastructure?
+
                       </button>
+
                     </div>
+
                   )}
+
                   {chatMessages.map((message) => (
+
                     <article key={message.id} className={`assistant-message ${message.role}`}>
+
                       <div className="assistant-message-label">{message.role === "user" ? "You" : "KnowledgeHub AI"}</div>
+
                       <div className="assistant-message-content"><ReactMarkdown>{message.content}</ReactMarkdown></div>
+
                       {message.role === "assistant" && message.sources?.length > 0 && (
+
                         <div className="assistant-sources">
+
                           <strong>Sources from your workspace</strong>
+
                           <div className="assistant-source-list">
+
                             {message.sources.map((source, index) => (
+
                               <button type="button" key={source.id || source._id || index}
+
                                 className="assistant-source" onClick={() => openAssistantSource(source)}>
+
                                 <span>[Source {source.sourceNumber || index + 1}]</span>
+
                                 {source.title}
+
                                 <small>{Math.round((source.similarityScore || 0) * 100)}% relevance</small>
+
                               </button>
+
                             ))}
+
                           </div>
+
                         </div>
+
                       )}
+
                     </article>
+
                   ))}
+
                   {askingAssistant && (
+
                     <div className="assistant-thinking"><span className="assistant-thinking-dot"></span>
+
                       Searching your knowledge and preparing an answer...</div>
+
                   )}
+
                 </div>
+
                 {assistantError && <div className="auth-error assistant-error" role="alert">{assistantError}</div>}
+
                 <form className="assistant-composer" onSubmit={handleAskAssistant}>
+
                   <textarea value={chatInput} onChange={(event) => setChatInput(event.target.value)}
+
                     placeholder="Ask anything about your team's knowledge..." rows={2} maxLength={1000}
+
                     disabled={askingAssistant} />
+
                   <div className="assistant-composer-footer">
+
                     <span>Answers are generated from your workspace knowledge.</span>
+
                     <button type="submit" className="primary-button" disabled={askingAssistant || !chatInput.trim()}>
+
                       {askingAssistant ? "Thinking..." : "Send"} <span>➤</span>
+
                     </button>
+
                   </div>
+
                 </form>
+
               </div>
+
             </section>
+
           ) : (
+
             <>
+
           {/* Welcome section */}
 
           <section className="welcome-section">
@@ -1064,7 +1150,9 @@ function App() {
             </span>
 
           </footer>
+
             </>
+
           )}
 
         </div>
